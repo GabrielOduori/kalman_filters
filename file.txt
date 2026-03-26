@@ -1,0 +1,302 @@
+Here’s a **complete Quarto-ready markdown (`.qmd`) outline** tailored to your exact story:
+
+* friendly meetup
+* vanilla implementation
+* RTS smoother motivation
+* Apollo reference
+* minimal equations
+
+You can paste this directly into a `.qmd` file and adapt.
+
+---
+
+````markdown
+---
+title: "Kalman Filters: From Noisy Data to Better Estimates"
+subtitle: "and why we built one ourselves"
+format:
+  revealjs:
+    slide-number: true
+    incremental: true
+execute:
+  echo: false
+---
+
+## 👋 Introduction
+
+This is pretty close to what I do every day.
+
+How do you estimate something you can’t directly observe—when your data is noisy?
+
+---
+
+## The Problem
+
+- We observe the world through noise
+- Sensors are imperfect
+- Data is messy
+
+---
+
+## Example: Noisy Signal
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+
+t = np.linspace(0, 10, 100)
+true = np.sin(t)
+noise = np.random.normal(0, 0.5, size=t.shape)
+measurements = true + noise
+
+plt.plot(t, measurements, '.', label="Measurements")
+plt.plot(t, true, label="True signal")
+plt.legend()
+plt.show()
+````
+
+---
+
+## What do we want?
+
+* Estimate the **hidden state**
+* Reduce noise
+* Do it in a principled way
+
+---
+
+## Intuition
+
+We have two sources of information:
+
+* Prediction (model)
+* Measurement (noisy)
+
+👉 The key idea:
+Combine them based on **uncertainty**
+
+---
+
+## The Core Idea
+
+Predict → Measure → Correct
+
+---
+
+## State Model
+
+x_k = A x_{k-1} + w_k
+
+We predict the next state with some uncertainty.
+
+---
+
+## Measurement Model
+
+z_k = H x_k + v_k
+
+We observe a noisy version of the state.
+
+---
+
+## Update Step
+
+x_k = x_k^- + K_k (z_k - H x_k^-)
+
+Prediction + correction
+
+👉 Correction depends on how much we trust the measurement
+
+---
+
+## Why not just use a library?
+
+We could…
+
+But we needed:
+
+* More control over the model
+* Access to internals
+* To extend the method
+
+👉 So we built a small version ourselves
+
+---
+
+## Vanilla Python Implementation
+
+```{python}
+x = 0
+P = 1
+
+A = 1
+H = 1
+Q = 0.1
+R = 0.5
+
+estimates = []
+
+for z in measurements:
+    # predict
+    x = A * x
+    P = A * P * A + Q
+
+    # update
+    K = P / (P + R)
+    x = x + K * (z - x)
+    P = (1 - K) * P
+
+    estimates.append(x)
+```
+
+---
+
+## Result: Filtering
+
+```{python}
+plt.plot(t, measurements, '.', label="Measurements")
+plt.plot(t, true, label="True")
+plt.plot(t, estimates, label="Kalman")
+plt.legend()
+plt.show()
+```
+
+---
+
+## This is great… but
+
+Kalman filtering only uses:
+
+👉 past + current data
+
+---
+
+## What if we have all the data?
+
+Offline setting:
+
+* We already have the full time series
+* Can we do better?
+
+👉 Yes — smoothing
+
+---
+
+## Key Idea: Smoothing
+
+* Forward pass → Kalman filter
+* Backward pass → refine estimates
+
+👉 Use future information to improve past estimates
+
+---
+
+## RTS Smoother
+
+x_k^s = x_k + C_k (x_{k+1}^s - x_{k+1}^-)
+
+👉 We adjust estimates using future information
+
+---
+
+## RTS Implementation (concept)
+
+```python
+smoothed = estimates.copy()
+
+for k in range(len(estimates)-2, -1, -1):
+    # simple conceptual version
+    smoothed[k] = smoothed[k] + 0.5 * (smoothed[k+1] - estimates[k+1])
+```
+
+*(simplified for illustration)*
+
+---
+
+## Result: Smoothing
+
+```{python}
+plt.plot(t, measurements, '.', label="Measurements")
+plt.plot(t, true, label="True")
+plt.plot(t, estimates, label="Filtered")
+plt.plot(t, smoothed, label="Smoothed")
+plt.legend()
+plt.show()
+```
+
+---
+
+## Filtering vs Smoothing
+
+* Filtering: real-time, online
+* Smoothing: offline, more accurate
+
+👉 Same model, better estimates
+
+---
+
+## Libraries
+
+* `pykalman`
+* `filterpy`
+* `statsmodels`
+
+👉 These implement filtering and smoothing
+
+But:
+
+👉 building it once makes it much clearer
+
+---
+
+## Fun fact 🚀
+
+The Apollo Guidance Computer used a Kalman filter.
+
+👉 You can read the original code on GitHub.
+
+* ~2 MHz processor
+* ~2 KB RAM
+* Still doing state estimation
+
+---
+
+## Why build it yourself?
+
+* Understand the mechanics
+* Debug and trust results
+* Extend when needed
+* Not everything is exposed in libraries
+
+---
+
+## Takeaways
+
+* Kalman filter = predict + correct
+* RTS smoother = refine using future data
+* Simple ideas → powerful results
+
+---
+
+## Thanks 🙌
+
+Questions?
+
+```
+
+---
+
+# 👍 Why this outline works
+
+- Strong narrative (your real motivation)
+- Minimal math (just enough structure)
+- Visual payoff (plots)
+- Clear differentiation (filter vs smoother)
+- Ends with something memorable (Apollo)
+
+---
+
+If you want, I can:
+- turn this into a **fully polished slide deck (styling, layout, transitions)**
+- or upgrade the RTS part to a **correct matrix-based implementation that still fits on one slide**
+```

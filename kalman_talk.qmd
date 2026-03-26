@@ -1,0 +1,548 @@
+---
+title: "Noisy Data? Python Has a Filter for That"
+subtitle: "A practical intro to Kalman filters"
+jupyter: python3
+format:
+  revealjs:
+    theme: dark
+    highlight-style: github-dark
+    slide-number: true
+    incremental: true
+    auto-stretch: true
+    smaller: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{python}
+#| include: false
+import sys
+sys.path.insert(0, ".")
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+from scipy import stats
+from src import KalmanFilter1D, load_uci_airquality, calibrate_sensor
+
+np.random.seed(42)
+
+t    = np.linspace(0, 10, 100)
+true = 40 + 5 * np.sin(t) + np.cumsum(np.random.randn(len(t)) * 0.2)
+meas = true + np.random.normal(0, 5, size=t.shape)
+```
+
+
+## 👋 Introduction
+
+This is pretty close to what I do every day.
+
+How do you estimate something you can't directly observe — when your data is noisy?
+
+
+## Why Python?
+
+- `numpy` makes the matrix maths readable — almost looks like the equations
+- `matplotlib` gives instant visual feedback while you're building intuition
+- The whole filter fits in **~10 lines** — no boilerplate, no ceremony
+- If you need more: `filterpy`, `pykalman`, `scipy` are one `pip install` away
+
+. . .
+
+👉 Python lets you focus on the **idea**, not the language
+
+
+## The Problem
+
+- We observe the world through sensors
+- Sensors are imperfect
+- Data is messy
+
+. . .
+
+**In our lab:** we measure NO2 across a city with low-cost sensors.
+
+They're cheap enough to deploy everywhere — but noisy.
+
+
+## Example: Noisy NO2 Signal
+
+```{python}
+fig, ax = plt.subplots(figsize=(10, 4))
+ax.plot(t, meas, '.', color="tomato", label="Low-cost sensor", alpha=0.7)
+ax.plot(t, true, '-', color="white",  label="True NO2",        linewidth=2)
+ax.set_ylabel("NO2 (μg/m³)")
+ax.legend()
+plt.tight_layout()
+plt.show()
+```
+
+
+## What Do We Want?
+
+- Estimate the **hidden state**
+- Reduce noise
+- Do it in a principled way
+
+
+## Intuition
+
+We have two sources of information:
+
+- Prediction (model)
+- Measurement (noisy)
+
+. . .
+
+👉 The key idea: combine them based on **uncertainty**
+
+
+## The Core Idea
+
+::: {.r-fit-text}
+Predict → Measure → Correct
+:::
+
+
+## State Model
+
+$$x_k = A \, x_{k-1} + w_k$$
+
+We predict the next state with some uncertainty.
+
+
+## Measurement Model
+
+$$z_k = H \, x_k + v_k$$
+
+We observe a noisy version of the state.
+
+
+## Update Step
+
+$$x_k = x_k^- + K_k \underbrace{(z_k - H x_k^-)}_{\text{innovation}}$$
+
+Prediction + correction
+
+. . .
+
+👉 Correction depends on how much we trust the measurement
+
+
+## Why Not Just Use a Library?
+
+We could…
+
+But we needed:
+
+- More control over the model
+- Access to internals
+- To extend the method
+
+. . .
+
+👉 So we built a small version ourselves
+
+
+## From Equations to Code
+
+:::: {.columns}
+
+::: {.column width="50%"}
+**Equations**
+
+$$x_k^- = A \, x_{k-1}$$
+$$P_k^- = A P_{k-1} A + Q$$
+
+$$K_k = \frac{P_k^-}{P_k^- + R}$$
+
+$$x_k = x_k^- + K_k(z_k - x_k^-)$$
+$$P_k = (1 - K_k) P_k^-$$
+:::
+
+::: {.column width="50%"}
+**Python**
+
+```python
+x_pred = A * x
+P_pred = A * P * A + Q
+
+K = P_pred / (P_pred + R)
+
+x = x_pred + K * (z - x_pred)
+P = (1 - K) * P_pred
+```
+:::
+
+::::
+
+. . .
+
+👉 One equation, one line — that's it
+
+
+## Vanilla Loop
+
+```{python}
+#| echo: true
+#| code-line-numbers: "1-7|9-14|16-18"
+x, P = 40.0, 10.0
+A, H = 1, 1
+Q    = 0.3
+R    = 25.0    # sensor noise variance (std ≈ 5 μg/m³)
+
+estimates = []
+
+for z in meas:
+    # Predict
+    x_pred = A * x
+    P_pred = A * P * A + Q
+
+    # Update
+    K = P_pred / (P_pred + H * H * R)
+    x = x_pred + K * (z - H * x_pred)
+    P = (1 - K * H) * P_pred
+
+    estimates.append(x)
+```
+
+
+## Let's Wrap This in a Class
+
+```{python}
+#| echo: true
+#| code-line-numbers: "1-8|10-14|16-20|22-26"
+class KalmanFilter1D:
+    def __init__(self, x0, P0, A, H, Q, R):
+        self.x, self.P = x0, P0
+        self.A, self.H, self.Q, self.R = A, H, Q, R
+
+    def predict(self):
+        self._xp = self.A * self.x
+        self._Pp = self.A * self.P * self.A + self.Q
+
+    def update(self, z, R=None):
+        R      = R if R is not None else self.R
+        K      = self._Pp / (self._Pp + self.H * self.H * R)
+        self.x = self._xp + K * (z - self.H * self._xp)
+        self.P = (1 - K * self.H) * self._Pp
+
+    def step(self, measurements):
+        self.predict()
+        for z, R in (measurements if hasattr(measurements, '__iter__')
+                     else [(measurements, self.R)]):
+            self.update(z, R)
+
+    def filter(self, measurements):
+        for z in measurements:
+            self.step(z)
+        return np.array(self._xs)
+
+    # + smooth() for RTS — coming up
+```
+
+
+## Using the Class
+
+```{python}
+#| echo: true
+#| output-location: column
+kf = KalmanFilter1D(
+    x0=40.0, P0=10.0,
+    A=1, H=1,
+    Q=0.3, R=25.0
+)
+
+estimates = kf.filter(meas)
+
+fig, ax = plt.subplots(figsize=(6, 4))
+ax.plot(t, meas,      '.', color="tomato",    label="Sensor",   alpha=0.6)
+ax.plot(t, true,      '-', color="white",     label="True NO2", linewidth=2)
+ax.plot(t, estimates, '-', color="limegreen", label="Filtered", linewidth=2.5)
+ax.set_ylabel("NO2 (μg/m³)")
+ax.legend()
+plt.tight_layout()
+plt.show()
+```
+
+
+## This is great… but
+
+Kalman filtering only uses:
+
+👉 **past + current** data
+
+
+## What If We Have All the Data?
+
+Offline setting — sensor logs processed overnight:
+
+- We already have the full time series
+- Can we do better?
+
+. . .
+
+👉 Yes — **smoothing**
+
+
+## Key Idea: Smoothing
+
+- Forward pass → Kalman filter
+- Backward pass → refine estimates
+
+. . .
+
+👉 Use future information to improve past estimates
+
+
+## RTS Smoother
+
+$$x_k^s = x_k + C_k \left( x_{k+1}^s - x_{k+1}^- \right)$$
+
+👉 We adjust estimates using future information
+
+
+## Adding smooth() to the Class
+
+```{python}
+#| echo: true
+#| code-line-numbers: "1-4|6-11"
+    def smooth(self):
+        xs, Ps         = np.array(self._xs),     np.array(self._Ps)
+        xpreds, Ppreds = np.array(self._xpreds), np.array(self._Ppreds)
+        smoothed = xs.copy()
+
+        for k in range(len(xs) - 2, -1, -1):
+            C           = Ps[k] * self.A / Ppreds[k+1]   # smoother gain
+            smoothed[k] = xs[k] + C * (smoothed[k+1] - xpreds[k+1])
+
+        return smoothed
+```
+
+
+## Filter → Smooth
+
+```{python}
+#| echo: true
+#| output-location: column
+kf2 = KalmanFilter1D(
+    x0=40.0, P0=10.0,
+    A=1, H=1, Q=0.3, R=25.0
+)
+kf2.filter(meas)
+smoothed = kf2.smooth()
+
+fig, ax = plt.subplots(figsize=(6, 4))
+ax.plot(t, meas,           '.', color="tomato",    label="Sensor",   alpha=0.5)
+ax.plot(t, true,           '-', color="white",     label="True NO2", linewidth=2)
+ax.plot(t, kf2.estimates,  '-', color="limegreen", label="Filtered", linewidth=2, alpha=0.7)
+ax.plot(t, smoothed,       '-', color="gold",      label="Smoothed", linewidth=2.5)
+ax.set_ylabel("NO2 (μg/m³)")
+ax.legend()
+plt.tight_layout()
+plt.show()
+```
+
+
+## Filtering vs Smoothing
+
+| | Filter | RTS Smoother |
+|--|--------|-------------|
+| **Data used** | past + present | full series |
+| **Use case** | real-time | offline reanalysis |
+| **Accuracy** | good | better |
+
+. . .
+
+👉 Same model — just more information
+
+
+## State Space Models — The Bigger Picture
+
+The Kalman filter **is** a state space model.
+
+. . .
+
+A state space model has two parts:
+
+$$x_k = A \, x_{k-1} + w_k \quad \text{(transition — how state evolves)}$$
+$$z_k = H \, x_k + v_k \quad \text{(observation — what sensors see)}$$
+
+. . .
+
+- **ARIMA** can be rewritten as a state space model — `statsmodels` does this internally
+- **Kalman filter** = inference in a linear Gaussian state space model
+- **RTS smoother** = full posterior over the state given all observations
+
+. . .
+
+👉 State space is the framework — Kalman is the efficient algorithm to solve it
+
+
+## What About ARIMA / Prophet?
+
+| | ARIMA / Prophet | Kalman Filter |
+|--|----------------|---------------|
+| **Primary goal** | Forecasting | State estimation |
+| **Multiple sensors** | No | Yes — built in |
+| **Uncertainty** | Confidence intervals | Propagated at every step |
+| **Real-time updates** | Refit needed | Natural — just run the loop |
+| **Physics/domain model** | No | Yes — you define `A`, `Q` |
+
+. . .
+
+👉 ARIMA asks *"what comes next?"*
+
+👉 Kalman asks *"what is true right now, given noisy observations?"*
+
+
+## Libraries
+
+- `pykalman`
+- `filterpy`
+- `statsmodels`
+
+👉 These implement filtering and smoothing
+
+. . .
+
+But: building it once makes it much clearer
+
+
+## Fun Fact 🚀
+
+The **Apollo Guidance Computer** used a Kalman filter.
+
+👉 You can read the original code on GitHub.
+
+- ~2 MHz processor
+- ~4 KB RAM
+- Still doing state estimation
+
+. . .
+
+> If it worked there, it'll work for our NO2 sensors.
+
+
+## Why Build It Yourself?
+
+- Understand the mechanics
+- Debug and trust results
+- Extend when needed
+- Not everything is exposed in libraries
+
+
+## Let's Try It on Real Data
+
+So far — simulated signals.
+
+. . .
+
+**UCI Air Quality dataset** — collected in an Italian city
+
+- Hourly NO2 readings over one year
+- One low-cost metal oxide sensor alongside a reference analyser
+- Exactly the setup we have in the lab
+
+. . .
+
+Two things to do before fusing:
+
+1. Handle missing values (`-200` sentinel in this dataset)
+2. **Calibrate** the sensor — it returns raw resistance, not μg/m³
+
+
+## Real Data — Load & Calibrate {.smaller}
+
+```{python}
+#| echo: true
+df         = load_uci_airquality("data/AirQualityUCI.csv")
+sensor_cal = calibrate_sensor(df["no2_sensor"], df["no2_ref"])
+```
+
+
+## Fusing Two Sensors — step()
+
+```{python}
+#| echo: true
+#| code-line-numbers: "1-5|7-9|11-12"
+R_ref, R_sensor = 4.0, 50.0   # reference is much more precise
+
+kf_real = KalmanFilter1D(
+    x0=float(df["no2_ref"].iloc[0]), P0=20.0,
+    A=1, H=1, Q=0.5, R=R_ref
+)
+
+for z_ref, z_lc in zip(df["no2_ref"], sensor_cal):
+    kf_real.step([(z_ref, R_ref), (z_lc, R_sensor)])
+
+smoothed_real = kf_real.smooth()
+```
+
+
+## Result: Real Fusion
+
+```{python}
+t_real = np.arange(len(df))
+fig, axes = plt.subplots(2, 1, figsize=(11, 7))
+
+ax = axes[0]
+ax.plot(t_real, sensor_cal,          color="tomato",    alpha=0.4, linewidth=1,      label="Low-cost (calibrated)")
+ax.plot(t_real, df["no2_ref"],       color="steelblue", linewidth=1.5, alpha=0.8,    label="Reference analyser")
+ax.plot(t_real, kf_real.estimates,   color="limegreen", linewidth=2.5,               label="Kalman filtered")
+ax.plot(t_real, smoothed_real,       color="gold",      linewidth=2, linestyle="--", label="RTS smoothed")
+ax.fill_between(t_real,
+    kf_real.estimates - 2*kf_real.uncertainty,
+    kf_real.estimates + 2*kf_real.uncertainty,
+    alpha=0.15, color="limegreen", label="±2σ")
+ax.set_ylabel("NO2 (μg/m³)")
+ax.legend(loc="upper right", fontsize=9)
+ax.set_title("UCI Air Quality — Italy")
+
+ax = axes[1]
+err_lc = sensor_cal.values - df["no2_ref"].values
+err_kf = kf_real.estimates - df["no2_ref"].values
+ax.axhline(0, color="white", linewidth=0.8, linestyle="--")
+ax.plot(t_real, err_lc, color="tomato",    alpha=0.5, linewidth=1,
+        label=f"Low-cost  RMSE = {np.sqrt(np.mean(err_lc**2)):.1f} μg/m³")
+ax.plot(t_real, err_kf, color="limegreen", linewidth=1.5,
+        label=f"Kalman    RMSE = {np.sqrt(np.mean(err_kf**2)):.1f} μg/m³")
+ax.set_xlabel("Hour")
+ax.set_ylabel("Error (μg/m³)")
+ax.legend(fontsize=9)
+plt.tight_layout()
+plt.show()
+```
+
+
+## Back to Our Lab
+
+We run the same approach with our own sensors:
+
+- Multiple **low-cost NO2 sensors** — high density, noisy
+- A few **regulatory analysers** — sparse, very accurate
+
+. . .
+
+The filter fuses them: cheap sensors benefit from reference accuracy without being overwritten.
+
+
+## Takeaways
+
+- Kalman filter = predict + correct
+- RTS smoother = refine using future data
+- Simple ideas → powerful results
+
+. . .
+
+Build it once from scratch — you'll trust it much more
+
+
+## Thanks 🙌
+
+Questions?
+
+. . .
+
+Code from this talk: `kalman_talk.qmd`
